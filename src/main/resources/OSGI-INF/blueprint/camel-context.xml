@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<blueprint xmlns="http://www.osgi.org/xmlns/blueprint/v1.0.0"
+  xmlns:cxf="http://camel.apache.org/schema/blueprint/cxf"
+  xmlns:ext="http://aries.apache.org/blueprint/xmlns/blueprint-ext/v1.5.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="
+    http://www.osgi.org/xmlns/blueprint/v1.0.0 http://www.osgi.org/xmlns/blueprint/v1.0.0/blueprint.xsd
+    http://camel.apache.org/schema/blueprint http://camel.apache.org/schema/blueprint/camel-blueprint.xsd
+    http://camel.apache.org/schema/blueprint/cxf http://camel.apache.org/schema/blueprint/cxf/camel-cxf.xsd
+  ">
+  <ext:property-placeholder evaluator="semperti">
+    <ext:default-properties>
+      <ext:property name="BUP_SERVICE_HOST" value="bup"/>
+      <ext:property name="BUP_SERVICE_PORT" value="3306"/>
+      <ext:property name="ENDPOINT_ADDRESS" value="/"/>
+      <ext:property name="COBIS_REST_SERVICE_HOST" value="cobis-rest"/>
+      <ext:property name="COBIS_REST_SERVICE_PORT" value="8181"/>
+      <ext:property name="BUP_REST_SERVICE_HOST" value="bup-rest"/>
+      <ext:property name="BUP_REST_SERVICE_PORT" value="8181"/>
+    </ext:default-properties>
+    <!--ext:location>file:service.properties</ext:location-->
+  </ext:property-placeholder>
+
+  <!-- XXX: ver como crear los 404 personalizados -->
+  <cxf:rsServer address="${ENDPOINT_ADDRESS}" id="serverEndpoint" serviceClass="com.semperti.hipotecario.poc.fuse.api.RestService">
+    <cxf:providers>
+      <bean class="com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider"/>
+      <bean class="org.apache.cxf.rs.security.cors.CrossOriginResourceSharingFilter"/>
+    </cxf:providers>
+  </cxf:rsServer>
+
+  <bean class="com.semperti.hipotecario.poc.fuse.api.CobisServiceHandler" id="cobisServiceHandler"/>
+  <cxf:rsClient address="http://${service:COBIS_REST}/cxf/" id="cobisService" serviceClass="com.semperti.hipotecario.poc.fuse.model.CobisRestService">
+    <cxf:providers>
+      <bean class="com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider"/>
+    </cxf:providers>
+  </cxf:rsClient>
+
+  <bean class="com.semperti.hipotecario.poc.fuse.api.BupServiceHandler" id="bupServiceHandler"/>
+  <cxf:rsClient address="http://${service:BUP_REST}/cxf/" id="bupService" serviceClass="com.semperti.hipotecario.poc.fuse.model.BupRestService">
+    <cxf:providers>
+      <bean class="com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider"/>
+    </cxf:providers>
+  </cxf:rsClient>
+
+  <bean class="com.semperti.hipotecario.poc.fuse.util.ExceptionHandler" id="exceptionHandler"/>
+  <bean class="com.semperti.hipotecario.poc.fuse.util.ServiceAggregator" id="serviceAggregator"/>
+
+  <camelContext autoStartup="true" xmlns="http://camel.apache.org/schema/blueprint" allowUseOriginalMessage="false">
+    <onException>
+      <exception>java.lang.Exception</exception>
+      <handled>
+        <constant>true</constant>
+      </handled>
+      <to uri="bean:exceptionHandler"/>
+    </onException>
+
+    <route id="mainRoute">
+      <from uri="cxfrs:bean:serverEndpoint"/>
+      <to uri="log:body?level=INFO"/>
+      <multicast parallelProcessing="true" strategyRef="serviceAggregator" stopOnException="true">
+        <to uri="direct:processCobis" />
+        <to uri="direct:processBup" />
+      </multicast>
+    </route>
+
+    <route>
+      <from uri="direct:processCobis" />
+      <setHeader headerName="SERVICE_NAME">
+        <constant>COBIS</constant>
+      </setHeader>
+      <doTry>
+        <recipientList>
+          <simple>bean:cobisServiceHandler?method=${header.operationName}</simple>
+        </recipientList>
+        <to uri="cxfrs://bean://cobisService" />
+        <doCatch>
+          <exception>org.apache.camel.component.bean.MethodNotFoundException</exception>
+        </doCatch>
+      </doTry>
+      <to uri="log:body?level=INFO" />
+    </route>
+
+    <route>
+      <from uri="direct:processBup" />
+      <setHeader headerName="SERVICE_NAME">
+        <constant>BUP</constant>
+      </setHeader>
+      <doTry>
+        <recipientList>
+          <simple>bean:bupServiceHandler?method=${header.operationName}</simple>
+        </recipientList>
+        <to uri="cxfrs://bean://bupService" />
+        <doCatch>
+          <exception>org.apache.camel.component.bean.MethodNotFoundException</exception>
+        </doCatch>
+      </doTry>
+      <to uri="log:body?level=INFO" />
+    </route>
+  </camelContext>
+</blueprint>
